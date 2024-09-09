@@ -1,3 +1,124 @@
+### add ignore list, drop all idea-specific files
+
+### lazy client init:
+
+```java
+  @Autowired
+  private MpSoapConfigApi mpSoapConfigApi;
+
+  private final AtomicReference<MediaPoolWebServicePortV2> mediaPoolWebServicePortV2 = new AtomicReference<>();
+
+  private MediaPoolWebServicePortV2 getLazy() {
+    var result = mediaPoolWebServicePortV2.get();
+    if (result == null) {
+      result = soapWebServicePortV2();
+      if (!mediaPoolWebServicePortV2.compareAndSet(null, result)) {
+        return mediaPoolWebServicePortV2.get();
+      }
+    }
+    return result;
+  }
+
+  private MediaPoolWebServicePortV2 soapWebServicePortV2() {
+    try {
+      var wsdlUrl = mpSoapConfigApi.systemUrl() + "/webservices/qqq/v2/";
+      var url = URI.create(wsdlUrl)
+        .toURL();
+      var service = new MediaPoolServiceV2(url);
+      var mediaPoolWebServicePortV2 = service.getMediaPoolPortV2(new MTOMFeature());
+
+      var bindingProvider = (BindingProvider) mediaPoolWebServicePortV2;
+      bindingProvider.getRequestContext().putAll(
+        Map.of(
+          BindingProvider.ENDPOINT_ADDRESS_PROPERTY, wsdlUrl,
+          BindingProvider.USERNAME_PROPERTY, mpSoapConfigApi.login(),
+          BindingProvider.PASSWORD_PROPERTY, mpSoapConfigApi.password(),
+          JAXWSProperties.CONNECT_TIMEOUT, 30000, //in MS 30000, 30 seconds, default: 30000, 30 seconds
+          JAXWSProperties.REQUEST_TIMEOUT, 120000, //in MS 120000, 120 seconds, default: 60000, 60 seconds
+          JAXWSProperties.HTTP_CLIENT_STREAMING_CHUNK_SIZE, 20971520 //20 Mb
+        ));
+      ((SOAPBinding) bindingProvider.getBinding()).setMTOMEnabled(true);
+      return mediaPoolWebServicePortV2;
+    } catch (MalformedURLException e) {
+      throw new IllegalStateException("Could not parse url", e);
+    }
+  }
+
+  @Override
+  public Asset assetById(Integer id) {
+    var mediaDetails = new GetMediaDetailsArgument()
+      .withMediaGuid(id.toString());
+    var soapDto = getLazy().getMediaDetails(mediaDetails);
+    return new Asset(id, soapDto.getFileName());
+  }
+```
+
+
+### file uploading
+
+```java
+
+  @Override
+  public Integer uploadAsNewAsset(String fileName, InputStream inputStream) {
+    var r = getLazy().uploadMediaAsStream(
+      fileName,
+      new StreamDataHandler(fileName, inputStream));
+
+    if (!r.getWarnings().isEmpty()) {
+      logger.warn(() -> "File uploading contains warnings: "
+        + r.getWarnings().stream()
+        .map(Warning::getWarning)
+        .collect(Collectors.joining()));
+    }
+
+    if (r.isSuccess()) {
+      return Integer.parseInt(r.getMediaGuid());
+    } else {
+      throw new IllegalStateException(
+        "Failed to upload asset " + fileName
+        + ". Errors: " + r.getError());
+    }
+  }
+
+  public static class StreamDataHandler extends DataHandler {
+
+    public StreamDataHandler(String fileName, InputStream inputStream) {
+      super(new StreamDataSource(fileName, inputStream));
+    }
+
+    public static class StreamDataSource implements DataSource {
+      private final String fileName;
+      private final InputStream inputStream;
+
+      public StreamDataSource(String fileName, InputStream inputStream) {
+        this.fileName = fileName;
+        this.inputStream = inputStream;
+      }
+
+      @Override
+      public InputStream getInputStream() throws IOException {
+        return inputStream;
+      }
+
+      @Override
+      public OutputStream getOutputStream() throws IOException {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public String getContentType() {
+        return "";
+      }
+
+      @Override
+      public String getName() {
+        return fileName;
+      }
+    }
+  }
+```
+https://stackoverflow.com/questions/2830561/how-can-i-convert-an-inputstream-to-a-datahandler
+
 ### https://docs.oracle.com/middleware/1212/wls/WSGET/jax-ws-mtom.htm#WSGET3469
 
 
